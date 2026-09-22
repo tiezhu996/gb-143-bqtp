@@ -52,6 +52,8 @@ export interface ServiceRecord {
   is_no_show?: boolean;
   location?: string;
   description?: string;
+  recovery_plan_id?: string;
+  idempotency_key?: string;
   recorded_at?: Date;
   created_at?: Date;
   updated_at?: Date;
@@ -66,7 +68,27 @@ export interface Volunteer {
   level: number;
   credit_score: number;
   service_count: number;
+  order_restricted: boolean;
   is_active: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export type RecoveryPlanStatus = 'active' | 'succeeded' | 'failed';
+
+export type RecoveryPlanFailureReason = 'complaint_upheld' | 'no_show' | 'deadline_missed';
+
+export interface RecoveryPlan {
+  id: string;
+  volunteer_id: string;
+  target_hours: number;
+  completed_hours: number;
+  deadline: Date;
+  status: RecoveryPlanStatus;
+  failure_reason: RecoveryPlanFailureReason | null;
+  created_by: string;
+  settled_at: Date | null;
+  settled_by: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -143,6 +165,32 @@ export interface CreditScoreResult {
   afterScore: number;
   changeAmount: number;
   breakdown: CreditCalculationBreakdown;
+  orderRestricted: boolean;
+}
+
+export interface RecoveryPlanSettlement {
+  plan: RecoveryPlan;
+  succeeded: boolean;
+  completedHours: number;
+  targetHours: number;
+  orderRestricted: boolean;
+  creditScore: number;
+  reason: RecoveryPlanFailureReason | null;
+}
+
+export interface RecoveryServiceResult {
+  record: ServiceRecord;
+  plan: RecoveryPlan;
+  pointsChange: number;
+  newTotalPoints: number;
+  newLevel: number;
+  creditScore: number;
+  creditChange: number;
+  completedHours: number;
+  remainingHours: number;
+  targetReached: boolean;
+  newBadges: any[];
+  levelUp: boolean;
 }
 
 export interface ServiceRecordWithCredit extends ServiceRecord {

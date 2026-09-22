@@ -11,6 +11,7 @@ import {
   getVolunteerSummary,
 } from '../services/volunteerManager';
 import { getVolunteerBadges } from '../services/badgeService';
+import { getActiveRecoveryPlan } from '../services/recoveryPlanService';
 import { messages } from '../constants/messages';
 import { sendBadRequest, sendInternalError } from '../utils/httpResponses';
 
@@ -45,6 +46,16 @@ router.get('/:id', async (req: Request, res: Response) => {
     res.status(statusCode).json(result);
   } catch (error) {
     sendInternalError(res, error, 'Error getting volunteer');
+  }
+});
+
+router.get('/:id/recovery-plan', async (req: Request, res: Response) => {
+  try {
+    const result = await getActiveRecoveryPlan(req.params.id);
+    const statusCode = result.success ? 200 : 400;
+    res.status(statusCode).json(result);
+  } catch (error) {
+    sendInternalError(res, error, 'Error getting active recovery plan');
   }
 });
 

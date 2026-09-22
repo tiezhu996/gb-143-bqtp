@@ -1,8 +1,9 @@
-import { ApiResponse, Complaint, ComplaintWithCredit, CreditScoreResult } from '../types';
+import { ApiResponse, Complaint, ComplaintWithCredit } from '../types';
 import pool from '../db/pool';
 import { calculateComplaintPenalty } from './pointsCalculator';
-import { logCreditChange, recalculateCreditScore } from './creditService';
-import { calculateLevel, checkNewBadges } from './badgeService';
+import { logCreditChangeInTx, recalculateCreditScoreInTx } from './creditService';
+import { calculateLevel } from './badgeService';
+import { invalidateActivePlanInTx } from './recoveryPlanService';
 import { logger } from '../utils/logger';
 import { messages } from '../constants/messages';
 
@@ -15,12 +16,15 @@ export const createComplaint = async (
   const client = await pool.connect();
 
   try {
+    await client.query('BEGIN');
+
     const volunteerResult = await client.query(
-      'SELECT * FROM volunteers WHERE id = $1',
+      'SELECT * FROM volunteers WHERE id = $1 FOR UPDATE',
       [volunteerId]
     );
 
     if (volunteerResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return { success: false, error: messages.volunteers.notFound };
     }
 
@@ -33,9 +37,11 @@ export const createComplaint = async (
 
     const newComplaint = result.rows[0];
 
-    const creditResult = await recalculateCreditScore(volunteerId);
+    // 待处理投诉尚未成立，不触发计划失效，仅按最新记录重算信用分。
+    const creditResult = await recalculateCreditScoreInTx(client, volunteerId);
     if (creditResult && creditResult.changeAmount !== 0) {
-      await logCreditChange(
+      await logCreditChangeInTx(
+        client,
         volunteerId,
         creditResult.changeAmount,
         `投诉创建-信用分重算: ${complaintType}`,
@@ -46,6 +52,8 @@ export const createComplaint = async (
       );
     }
 
+    await client.query('COMMIT');
+
     return {
       success: true,
       data: {
@@ -55,6 +63,9 @@ export const createComplaint = async (
         creditBreakdown: creditResult?.breakdown,
       },
     };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
   } finally {
     client.release();
   }
@@ -155,11 +166,11 @@ export const handleComplaint = async (
         [resolution, handledBy, complaintId]
       );
 
-      await client.query('COMMIT');
-
-      const creditResult = await recalculateCreditScore(complaint.volunteer_id);
+      // 投诉驳回（未成立）：不触发计划失效，仅按最新记录重算信用分。
+      const creditResult = await recalculateCreditScoreInTx(client, complaint.volunteer_id);
       if (creditResult && creditResult.changeAmount !== 0) {
-        await logCreditChange(
+        await logCreditChangeInTx(
+          client,
           complaint.volunteer_id,
           creditResult.changeAmount,
           '投诉驳回-信用分重算',
@@ -169,6 +180,8 @@ export const handleComplaint = async (
           'complaint'
         );
       }
+
+      await client.query('COMMIT');
 
       return {
         success: true,
@@ -187,7 +200,7 @@ export const handleComplaint = async (
     );
 
     const volunteerResult = await client.query(
-      'SELECT * FROM volunteers WHERE id = $1',
+      'SELECT * FROM volunteers WHERE id = $1 FOR UPDATE',
       [complaint.volunteer_id]
     );
 
@@ -226,6 +239,35 @@ export const handleComplaint = async (
       [resolution, creditPenalty, pointsPenalty, handledBy, complaintId]
     );
 
+    // 已成立投诉：若志愿者处于恢复观察期，计划立即失效，保持接单限制，
+    // 并按最新记录重算信用分（与投诉处理同一事务，只生效一次）。
+    const invalidation = await invalidateActivePlanInTx(
+      client,
+      complaint.volunteer_id,
+      'complaint_upheld',
+      handledBy,
+      complaintId
+    );
+
+    let creditResult = invalidation.creditResult;
+
+    // 无观察期失效时，仍需正常重算一次信用分。
+    if (!invalidation.plan) {
+      creditResult = await recalculateCreditScoreInTx(client, complaint.volunteer_id);
+      if (creditResult && creditResult.changeAmount !== 0) {
+        await logCreditChangeInTx(
+          client,
+          complaint.volunteer_id,
+          creditResult.changeAmount,
+          `投诉处理-信用分重算: ${complaint.complaint_type}`,
+          creditResult.beforeScore,
+          creditResult.afterScore,
+          complaintId,
+          'complaint'
+        );
+      }
+    }
+
     await client.query(
       `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, new_value, reason)
        VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -235,19 +277,6 @@ export const handleComplaint = async (
 
     await client.query('COMMIT');
 
-    const creditResult = await recalculateCreditScore(complaint.volunteer_id);
-    if (creditResult && creditResult.changeAmount !== 0) {
-      await logCreditChange(
-        complaint.volunteer_id,
-        creditResult.changeAmount,
-        `投诉处理-信用分重算: ${complaint.complaint_type}`,
-        creditResult.beforeScore,
-        creditResult.afterScore,
-        complaintId,
-        'complaint'
-      );
-    }
-
     return {
       success: true,
       data: {
@@ -256,6 +285,7 @@ export const handleComplaint = async (
         pointsPenalty,
         newTotalPoints,
         newLevel,
+        recoveryPlanFailed: !!invalidation.plan,
         creditScore: creditResult?.afterScore,
         creditChange: creditResult?.changeAmount,
         creditBreakdown: creditResult?.breakdown,

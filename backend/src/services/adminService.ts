@@ -1,7 +1,7 @@
 import { ApiResponse } from '../types';
 import pool from '../db/pool';
-import { calculateLevel, checkNewBadges } from './badgeService';
-import { logCreditChange } from './creditService';
+import { calculateLevel, checkNewBadgesInTx } from './badgeService';
+import { logCreditChangeInTx } from './creditService';
 import { isCreditLimited } from './creditService';
 import { logger } from '../utils/logger';
 import { messages } from '../constants/messages';
@@ -54,7 +54,7 @@ export const adjustPoints = async (
         'SELECT * FROM badges WHERE volunteer_id = $1',
         [volunteerId]
       );
-      newBadges = await checkNewBadges(volunteerId, newLevel, currentBadges.rows);
+      newBadges = await checkNewBadgesInTx(client, volunteerId, newLevel, currentBadges.rows);
       levelUp = true;
     }
 
@@ -116,12 +116,16 @@ export const adjustCreditScore = async (
     const oldCreditScore = volunteer.credit_score;
     const newCreditScore = Math.max(0, Math.min(100, oldCreditScore + creditChange));
 
+    // 管理员显式调整：以调整后的信用分为准同步接单限制状态。
+    const isLimited = isCreditLimited(newCreditScore);
+
     await client.query(
-      'UPDATE volunteers SET credit_score = $1 WHERE id = $2',
-      [newCreditScore, volunteerId]
+      'UPDATE volunteers SET credit_score = $1, order_restricted = $2 WHERE id = $3',
+      [newCreditScore, isLimited, volunteerId]
     );
 
-    await logCreditChange(
+    await logCreditChangeInTx(
+      client,
       volunteerId,
       creditChange,
       `管理员调整: ${reason}`,
@@ -130,8 +134,6 @@ export const adjustCreditScore = async (
       undefined,
       'admin_adjust'
     );
-
-    const isLimited = isCreditLimited(newCreditScore);
 
     await client.query(
       `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, old_value, new_value, reason)

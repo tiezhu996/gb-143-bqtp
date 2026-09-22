@@ -1,8 +1,14 @@
 import { Volunteer, ServiceRecord, PointsLog, ApiResponse, CreateServiceRecordResult } from '../types';
 import pool from '../db/pool';
 import { calculatePoints, calculateNoShowPenalty } from './pointsCalculator';
-import { calculateLevel, checkNewBadges } from './badgeService';
-import { logCreditChange, isCreditLimited, CREDIT_LIMIT_THRESHOLD, recalculateCreditScore } from './creditService';
+import { calculateLevel, checkNewBadgesInTx } from './badgeService';
+import {
+  logCreditChangeInTx,
+  isCreditLimited,
+  CREDIT_LIMIT_THRESHOLD,
+  recalculateCreditScoreInTx,
+} from './creditService';
+import { loadActivePlanInTx } from './recoveryPlanService';
 import { logger } from '../utils/logger';
 import { messages } from '../constants/messages';
 
@@ -13,7 +19,7 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
     await client.query('BEGIN');
 
     const volunteerResult = await client.query(
-      'SELECT * FROM volunteers WHERE id = $1',
+      'SELECT * FROM volunteers WHERE id = $1 FOR UPDATE',
       [record.volunteer_id]
     );
 
@@ -22,9 +28,38 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
       return { success: false, error: messages.volunteers.notFound };
     }
 
-    const volunteer = volunteerResult.rows[0] as Volunteer;
+    let volunteer = volunteerResult.rows[0] as Volunteer;
 
-    if (isCreditLimited(volunteer.credit_score)) {
+    // 若观察期已到期，先在本事务内完成到期结算（只生效一次）。
+    const { settlement } = await loadActivePlanInTx(client, volunteer.id, 'system');
+
+    // 结算可能改变志愿者的限制状态，重新读取最新状态。
+    const refreshedResult = await client.query(
+      'SELECT * FROM volunteers WHERE id = $1',
+      [volunteer.id]
+    );
+    volunteer = refreshedResult.rows[0] as Volunteer;
+
+    // 存在进行中的观察期：普通服务记录一律拒绝，计划内恢复服务仅管理员可登记。
+    const activePlanResult = await client.query(
+      `SELECT id FROM recovery_plans WHERE volunteer_id = $1 AND status = 'active'`,
+      [volunteer.id]
+    );
+
+    if (activePlanResult.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return {
+        success: false,
+        error: messages.recoveryPlans.activePlanBlocksService,
+        details: {
+          recovery_plan_id: activePlanResult.rows[0].id,
+          message: messages.recoveryPlans.activePlanBlocksService,
+        },
+      };
+    }
+
+    // 接单限制：信用分低于阈值且无观察期豁免。
+    if (volunteer.order_restricted || isCreditLimited(volunteer.credit_score)) {
       await client.query('ROLLBACK');
       return {
         success: false,
@@ -32,6 +67,8 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
         details: {
           credit_score: volunteer.credit_score,
           credit_limit_threshold: CREDIT_LIMIT_THRESHOLD,
+          order_restricted: volunteer.order_restricted,
+          auto_settlement: settlement ?? undefined,
           message: messages.volunteers.creditLimitedDetail(volunteer.credit_score, CREDIT_LIMIT_THRESHOLD)
         }
       };
@@ -101,14 +138,14 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
         'SELECT * FROM badges WHERE volunteer_id = $1',
         [volunteer.id]
       );
-      newBadges = await checkNewBadges(volunteer.id, newLevel, currentBadges.rows);
+      newBadges = await checkNewBadgesInTx(client, volunteer.id, newLevel, currentBadges.rows);
     }
 
-    await client.query('COMMIT');
-
-    const creditResult = await recalculateCreditScore(volunteer.id);
+    // 信用分重算与记录写入同一事务，失败整体回滚，不留下半更新。
+    const creditResult = await recalculateCreditScoreInTx(client, volunteer.id);
     if (creditResult && creditResult.changeAmount !== 0) {
-      await logCreditChange(
+      await logCreditChangeInTx(
+        client,
         volunteer.id,
         creditResult.changeAmount,
         record.is_no_show ? '服务爽约-信用分重算' : `完成服务-信用分重算: ${record.service_type}`,
@@ -118,6 +155,8 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
         'service_record'
       );
     }
+
+    await client.query('COMMIT');
 
     return {
       success: true,
@@ -287,11 +326,10 @@ export const deleteServiceRecord = async (
       [adminId, 'delete', 'service_record', recordId, record, reason]
     );
 
-    await client.query('COMMIT');
-
-    const creditResult = await recalculateCreditScore(record.volunteer_id);
+    const creditResult = await recalculateCreditScoreInTx(client, record.volunteer_id);
     if (creditResult && creditResult.changeAmount !== 0) {
-      await logCreditChange(
+      await logCreditChangeInTx(
+        client,
         record.volunteer_id,
         creditResult.changeAmount,
         '删除服务记录-信用分重算',
@@ -301,6 +339,8 @@ export const deleteServiceRecord = async (
         'admin_delete'
       );
     }
+
+    await client.query('COMMIT');
 
     return {
       success: true,

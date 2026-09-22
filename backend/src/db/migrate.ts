@@ -20,6 +20,7 @@ const createTables = async (): Promise<void> => {
         level INTEGER NOT NULL DEFAULT 1,
         credit_score INTEGER NOT NULL DEFAULT 100,
         service_count INTEGER NOT NULL DEFAULT 0,
+        order_restricted BOOLEAN NOT NULL DEFAULT false,
         is_active BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -27,6 +28,42 @@ const createTables = async (): Promise<void> => {
 
       CREATE INDEX IF NOT EXISTS idx_volunteers_total_points ON volunteers(total_points DESC);
       CREATE INDEX IF NOT EXISTS idx_volunteers_credit_score ON volunteers(credit_score DESC);
+    `);
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'volunteers' AND column_name = 'order_restricted'
+        ) THEN
+          ALTER TABLE volunteers ADD COLUMN order_restricted BOOLEAN NOT NULL DEFAULT false;
+        END IF;
+      END $$;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS recovery_plans (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        volunteer_id UUID NOT NULL REFERENCES volunteers(id) ON DELETE CASCADE,
+        target_hours DECIMAL(8,2) NOT NULL CHECK (target_hours > 0),
+        completed_hours DECIMAL(8,2) NOT NULL DEFAULT 0 CHECK (completed_hours >= 0),
+        deadline TIMESTAMP NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'succeeded', 'failed')),
+        failure_reason VARCHAR(50),
+        created_by VARCHAR(100) NOT NULL,
+        settled_at TIMESTAMP,
+        settled_by VARCHAR(100),
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_recovery_plans_one_active_per_volunteer
+        ON recovery_plans(volunteer_id) WHERE status = 'active';
+      CREATE INDEX IF NOT EXISTS idx_recovery_plans_volunteer_id ON recovery_plans(volunteer_id);
+      CREATE INDEX IF NOT EXISTS idx_recovery_plans_status ON recovery_plans(status);
+      CREATE INDEX IF NOT EXISTS idx_recovery_plans_deadline ON recovery_plans(deadline);
     `);
 
     await client.query(`
@@ -40,6 +77,8 @@ const createTables = async (): Promise<void> => {
         is_no_show BOOLEAN NOT NULL DEFAULT false,
         location VARCHAR(200),
         description TEXT,
+        recovery_plan_id UUID,
+        idempotency_key VARCHAR(100),
         recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -48,6 +87,30 @@ const createTables = async (): Promise<void> => {
       CREATE INDEX IF NOT EXISTS idx_service_records_volunteer_id ON service_records(volunteer_id);
       CREATE INDEX IF NOT EXISTS idx_service_records_recorded_at ON service_records(recorded_at DESC);
       CREATE INDEX IF NOT EXISTS idx_service_records_service_type ON service_records(service_type);
+      CREATE INDEX IF NOT EXISTS idx_service_records_recovery_plan_id ON service_records(recovery_plan_id);
+    `);
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'service_records' AND column_name = 'recovery_plan_id'
+        ) THEN
+          ALTER TABLE service_records
+            ADD COLUMN recovery_plan_id UUID
+            REFERENCES recovery_plans(id) ON DELETE SET NULL;
+        END IF;
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'service_records' AND column_name = 'idempotency_key'
+        ) THEN
+          ALTER TABLE service_records ADD COLUMN idempotency_key VARCHAR(100);
+        END IF;
+      END $$;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_service_records_idempotency_key
+        ON service_records(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `);
 
     await client.query(`
@@ -151,6 +214,11 @@ const createTables = async (): Promise<void> => {
       DROP TRIGGER IF EXISTS update_service_records_updated_at ON service_records;
       CREATE TRIGGER update_service_records_updated_at
         BEFORE UPDATE ON service_records
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+      DROP TRIGGER IF EXISTS update_recovery_plans_updated_at ON recovery_plans;
+      CREATE TRIGGER update_recovery_plans_updated_at
+        BEFORE UPDATE ON recovery_plans
         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
     `);
 

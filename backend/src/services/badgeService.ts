@@ -1,3 +1,4 @@
+import { PoolClient } from 'pg';
 import { LEVEL_THRESHOLDS, BADGE_NAMES, BADGE_DESCRIPTIONS, Badge } from '../types';
 import pool from '../db/pool';
 
@@ -12,7 +13,8 @@ export const calculateLevel = (totalPoints: number): number => {
   return currentLevel;
 };
 
-export const checkNewBadges = async (
+export const checkNewBadgesInTx = async (
+  client: PoolClient,
   volunteerId: string,
   newLevel: number,
   currentBadges: Badge[]
@@ -25,22 +27,30 @@ export const checkNewBadges = async (
       const badgeName = BADGE_NAMES[level];
       const description = BADGE_DESCRIPTIONS[level];
 
-      const client = await pool.connect();
-      try {
-        const result = await client.query(
-          `INSERT INTO badges (volunteer_id, star_level, badge_name, description)
-           VALUES ($1, $2, $3, $4)
-           RETURNING *`,
-          [volunteerId, level, badgeName, description]
-        );
-        newBadges.push(result.rows[0]);
-      } finally {
-        client.release();
-      }
+      const result = await client.query(
+        `INSERT INTO badges (volunteer_id, star_level, badge_name, description)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [volunteerId, level, badgeName, description]
+      );
+      newBadges.push(result.rows[0]);
     }
   }
 
   return newBadges;
+};
+
+export const checkNewBadges = async (
+  volunteerId: string,
+  newLevel: number,
+  currentBadges: Badge[]
+): Promise<Badge[]> => {
+  const client = await pool.connect();
+  try {
+    return await checkNewBadgesInTx(client, volunteerId, newLevel, currentBadges);
+  } finally {
+    client.release();
+  }
 };
 
 export const getVolunteerBadges = async (volunteerId: string): Promise<Badge[]> => {
