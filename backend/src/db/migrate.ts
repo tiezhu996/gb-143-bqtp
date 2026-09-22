@@ -51,6 +51,32 @@ const createTables = async (): Promise<void> => {
     `);
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS credit_recovery_plans (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        volunteer_id UUID NOT NULL REFERENCES volunteers(id) ON DELETE CASCADE,
+        target_hours DECIMAL(6,2) NOT NULL CHECK (target_hours > 0),
+        completed_hours DECIMAL(6,2) NOT NULL DEFAULT 0 CHECK (completed_hours >= 0),
+        deadline TIMESTAMP NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'failed', 'invalidated')),
+        settlement_note TEXT,
+        created_by VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        settled_at TIMESTAMP
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_recovery_plans_one_active
+        ON credit_recovery_plans(volunteer_id) WHERE status = 'active';
+      CREATE INDEX IF NOT EXISTS idx_credit_recovery_plans_volunteer_id ON credit_recovery_plans(volunteer_id);
+      CREATE INDEX IF NOT EXISTS idx_credit_recovery_plans_status ON credit_recovery_plans(status);
+    `);
+
+    await client.query(`
+      ALTER TABLE service_records ADD COLUMN IF NOT EXISTS recovery_plan_id UUID REFERENCES credit_recovery_plans(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_service_records_recovery_plan_id ON service_records(recovery_plan_id);
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS badges (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         volunteer_id UUID NOT NULL REFERENCES volunteers(id) ON DELETE CASCADE,
@@ -151,6 +177,11 @@ const createTables = async (): Promise<void> => {
       DROP TRIGGER IF EXISTS update_service_records_updated_at ON service_records;
       CREATE TRIGGER update_service_records_updated_at
         BEFORE UPDATE ON service_records
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+      DROP TRIGGER IF EXISTS update_credit_recovery_plans_updated_at ON credit_recovery_plans;
+      CREATE TRIGGER update_credit_recovery_plans_updated_at
+        BEFORE UPDATE ON credit_recovery_plans
         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
     `);
 

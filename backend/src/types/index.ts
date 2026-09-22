@@ -50,6 +50,7 @@ export interface ServiceRecord {
   rating: number;
   points_earned?: number;
   is_no_show?: boolean;
+  recovery_plan_id?: string | null;
   location?: string;
   description?: string;
   recorded_at?: Date;
@@ -117,6 +118,22 @@ export interface PointsLog {
   related_id?: string;
   related_type?: string;
   created_at: Date;
+}
+
+export type RecoveryPlanStatus = 'active' | 'completed' | 'failed' | 'invalidated';
+
+export interface CreditRecoveryPlan {
+  id: string;
+  volunteer_id: string;
+  target_hours: number;
+  completed_hours: number;
+  deadline: Date;
+  status: RecoveryPlanStatus;
+  settlement_note?: string | null;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+  settled_at?: Date | null;
 }
 
 export interface CreditCalculationBreakdown {

@@ -41,4 +41,11 @@ export const apiEndpoints = [
   'POST /api/v1/complaints/:id/handle - 处理投诉',
   'POST /api/v1/admin/adjust-points - 调整积分',
   'POST /api/v1/admin/adjust-credit - 调整信用分',
+  'POST /api/v1/admin/recovery-plans - 创建低信用恢复计划',
+  'GET  /api/v1/admin/recovery-plans - 恢复计划列表',
+  'GET  /api/v1/admin/recovery-plans/:id - 恢复计划详情',
+  'POST /api/v1/admin/recovery-plans/:id/records - 登记计划内恢复服务',
+  'POST /api/v1/admin/recovery-plans/:id/settle - 恢复计划到期结算',
+  'POST /api/v1/admin/recovery-plans/settle-due - 批量结算到期恢复计划',
+  'GET  /api/v1/volunteers/:id/recovery-plan - 志愿者当前恢复计划',
 ];

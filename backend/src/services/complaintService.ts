@@ -2,6 +2,7 @@ import { ApiResponse, Complaint, ComplaintWithCredit, CreditScoreResult } from '
 import pool from '../db/pool';
 import { calculateComplaintPenalty } from './pointsCalculator';
 import { logCreditChange, recalculateCreditScore } from './creditService';
+import { invalidateActivePlanForVolunteer } from './recoveryPlanService';
 import { calculateLevel, checkNewBadges } from './badgeService';
 import { logger } from '../utils/logger';
 import { messages } from '../constants/messages';
@@ -225,6 +226,9 @@ export const handleComplaint = async (
        WHERE id = $5`,
       [resolution, creditPenalty, pointsPenalty, handledBy, complaintId]
     );
+
+    // 投诉成立，生效中的恢复计划立即失效（同一事务，失败一起回滚）
+    await invalidateActivePlanForVolunteer(client, complaint.volunteer_id, messages.recoveryPlans.invalidatedComplaint);
 
     await client.query(
       `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, new_value, reason)

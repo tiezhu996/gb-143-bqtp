@@ -11,6 +11,7 @@ import {
   getVolunteerSummary,
 } from '../services/volunteerManager';
 import { getVolunteerBadges } from '../services/badgeService';
+import { getVolunteerActiveRecoveryPlan } from '../services/recoveryPlanService';
 import { messages } from '../constants/messages';
 import { sendBadRequest, sendInternalError } from '../utils/httpResponses';
 
@@ -86,6 +87,15 @@ router.get('/:id/credit-logs', validateQuery(paginationSchema), async (req: Requ
     res.status(200).json(result);
   } catch (error) {
     sendInternalError(res, error, 'Error getting credit logs');
+  }
+});
+
+router.get('/:id/recovery-plan', async (req: Request, res: Response) => {
+  try {
+    const result = await getVolunteerActiveRecoveryPlan(req.params.id);
+    res.status(200).json(result);
+  } catch (error) {
+    sendInternalError(res, error, 'Error getting volunteer recovery plan');
   }
 });
 

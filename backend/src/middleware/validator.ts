@@ -96,6 +96,26 @@ export const adjustCreditSchema = Joi.object({
   reason: Joi.string().min(5).required(),
 });
 
+export const createRecoveryPlanSchema = Joi.object({
+  volunteer_id: Joi.string().uuid().required(),
+  target_hours: Joi.number().positive().max(1000).required(),
+  deadline: Joi.date().greater('now').required(),
+  reason: Joi.string().max(200).optional(),
+});
+
+export const recoveryServiceRecordSchema = Joi.object({
+  service_type: Joi.string().valid(
+    'elderly_care', 'child_care', 'medical_assist', 'education',
+    'community_service', 'disaster_relief', 'environmental',
+    'cultural_activity', 'other'
+  ).required(),
+  duration_hours: Joi.number().positive().required(),
+  rating: Joi.number().integer().min(1).max(5).default(5),
+  is_no_show: Joi.boolean().default(false),
+  location: Joi.string().optional(),
+  description: Joi.string().optional(),
+});
+
 export const paginationSchema = Joi.object({
   page: Joi.number().integer().min(1).default(1),
   page_size: Joi.number().integer().min(1).max(100).default(20),
@@ -105,4 +125,9 @@ export const paginationSchema = Joi.object({
 export const trendSchema = Joi.object({
   start_date: Joi.date().required(),
   end_date: Joi.date().required(),
+});
+
+export const recoveryPlanQuerySchema = paginationSchema.keys({
+  volunteer_id: Joi.string().uuid().optional(),
+  status: Joi.string().valid('active', 'completed', 'failed', 'invalidated').optional(),
 });

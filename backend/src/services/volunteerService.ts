@@ -3,6 +3,7 @@ import pool from '../db/pool';
 import { calculatePoints, calculateNoShowPenalty } from './pointsCalculator';
 import { calculateLevel, checkNewBadges } from './badgeService';
 import { logCreditChange, isCreditLimited, CREDIT_LIMIT_THRESHOLD, recalculateCreditScore } from './creditService';
+import { invalidateActivePlanForVolunteer } from './recoveryPlanService';
 import { logger } from '../utils/logger';
 import { messages } from '../constants/messages';
 
@@ -102,6 +103,11 @@ export const createServiceRecord = async (record: ServiceRecord): Promise<ApiRes
         [volunteer.id]
       );
       newBadges = await checkNewBadges(volunteer.id, newLevel, currentBadges.rows);
+    }
+
+    // 爽约记录会使生效中的恢复计划立即失效（同一事务，失败一起回滚）
+    if (record.is_no_show) {
+      await invalidateActivePlanForVolunteer(client, volunteer.id, messages.recoveryPlans.invalidatedNoShow);
     }
 
     await client.query('COMMIT');
@@ -280,6 +286,16 @@ export const deleteServiceRecord = async (
     }
 
     await client.query('DELETE FROM service_records WHERE id = $1', [recordId]);
+
+    // 删除计划内恢复服务记录时，同步回退生效中计划的进度
+    if (record.recovery_plan_id && !record.is_no_show) {
+      await client.query(
+        `UPDATE credit_recovery_plans
+         SET completed_hours = GREATEST(0, completed_hours - $1)
+         WHERE id = $2 AND status = 'active'`,
+        [record.duration_hours, record.recovery_plan_id]
+      );
+    }
 
     await client.query(
       `INSERT INTO admin_audit_logs (admin_id, action, target_type, target_id, old_value, reason)
